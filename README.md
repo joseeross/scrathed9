@@ -97,9 +97,17 @@ python -m security_agent --watch-dir ~/Downloads --auto-quarantine watch
   API) something like `~/.ssh/id_rsa`. The agent opens files with `O_NOFOLLOW` so the
   open itself atomically refuses a symlink target, and YARA scans the bytes already
   read rather than reopening the path itself (which would reintroduce the same race).
-  On Windows, where `O_NOFOLLOW` doesn't exist, this falls back to a best-effort
-  pre-open check - narrower risk in practice since creating a symlink there normally
-  requires elevated privileges, but the atomic guarantee is POSIX-only.
+  **On Windows, where `O_NOFOLLOW` doesn't exist, this falls back to a check-then-open
+  (`lstat` then `open`) with the identical TOCTOU shape this section just described for
+  POSIX before the fix - the atomic guarantee is POSIX-only.** In practice the risk is
+  narrower there because creating a filesystem symlink on Windows normally requires
+  elevated privileges (Developer Mode or admin), so a low-privilege process dropping
+  files into the watched folder typically can't stage the race at all - but that's a
+  property of the deployment, not a guarantee this code provides. **Do not point this
+  agent at a folder on Windows that other users or lower-privileged processes can also
+  write to.** The real fix is `CreateFileW` with `FILE_FLAG_OPEN_REPARSE_POINT` (Windows'
+  equivalent of an atomic no-follow open), which is out of scope for v1 - tracked as
+  follow-up work, not silently assumed away.
 
 ## Extending detection
 

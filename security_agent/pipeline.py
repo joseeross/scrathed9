@@ -20,6 +20,16 @@ from .yara_scan import YaraScanner
 
 logger = logging.getLogger(__name__)
 
+# INVARIANT for anyone adding a new file-handling helper here: once a file has been
+# opened symlink-safely (via _open_regular_file_no_follow, below) and its bytes read,
+# every downstream consumer of that file's content - heuristics, YARA, the Claude
+# analyzer, anything added later - must take those bytes (or the fd), never the Path.
+# A helper that takes a Path and does its own I/O is a second entry point: it can
+# silently reopen the file by name and reintroduce the exact TOCTOU race this module
+# closes at the one point that's supposed to matter. This is exactly how the YARA
+# scanner regressed the fix once already (it matched by path, so yara-python reopened
+# the file itself, bypassing pipeline.process()'s guard entirely) - see yara_scan.py.
+
 # Hard floor, independent of config: never auto-quarantine below this confidence.
 # Not exposed as a config option on purpose - a model-reported confidence score is
 # not a calibrated probability, especially against a truncated/partial excerpt, and
