@@ -6,7 +6,14 @@ escalates anything suspicious to Claude for deep threat analysis, a quarantine
 recommendation, and a written security report.
 
 This is a **defensive** tool intended for monitoring your own systems and files you're
-authorized to inspect. It never executes or opens the files it analyzes.
+authorized to inspect. It never executes the files it analyzes - content is read as
+bytes for analysis only.
+
+**Platform note:** developed and tested on Linux. The symlink protection described in
+[Safety model](#safety-model) is atomic and kernel-enforced there (and should behave the
+same on macOS, also POSIX). **On Windows it is not equivalent** - it falls back to a
+non-atomic check with a real race window, so don't point `watch_dir` at a folder that
+other users or lower-privileged processes can also write to.
 
 ## How it works
 
@@ -108,6 +115,29 @@ python -m security_agent --watch-dir ~/Downloads --auto-quarantine watch
   write to.** The real fix is `CreateFileW` with `FILE_FLAG_OPEN_REPARSE_POINT` (Windows'
   equivalent of an atomic no-follow open), which is out of scope for v1 - tracked as
   follow-up work, not silently assumed away.
+- **Test coverage and what it does and doesn't prove.** The test suite exercises the
+  heuristic scoring rules, the safety guards (a simulated symlink-swap race against the
+  live `O_NOFOLLOW` open path, the auto-quarantine confidence floor, the
+  truncated-excerpt block, a file deleted before processing, and a file deleted mid
+  stability-poll), and an end-to-end run confirming YARA matches against in-memory bytes
+  with a real `yara-python` install. All of this has only been run on Linux. The
+  `O_NOFOLLOW` code path is therefore verified as described; the Windows fallback path
+  is not exercised by the suite at all and should be treated as unverified, consistent
+  with the caveat above.
+
+### Why the symlink handling looks like this
+
+The first version of the symlink fix checked `is_symlink()` once up front and then
+called `stat()`/`read_bytes()` separately - both of those re-resolve the path and follow
+symlinks. It passed a test with a symlink present from the start, and would have shipped
+looking correct: a static check, a passing test, nothing in review to flag. It wasn't
+actually closed until two more things happened - simulating the swap explicitly (create
+a real file, delete it, replace it with a symlink, then open) to prove the race, and
+noticing that `YaraScanner.scan()` took a path and let `yara-python` reopen the file
+itself, bypassing the guard entirely from a second, independent code path. The lesson
+generalizes past this one bug: a fix to a check-then-use race isn't verified by a test
+that never constructs the race, and a guard placed at one call site doesn't hold if
+another helper re-derives file access from the same path.
 
 ## Extending detection
 
@@ -143,3 +173,9 @@ escalation, the Claude model/effort used, and logging level.
 pip install pytest
 pytest
 ```
+
+Coverage: heuristic scoring rules (encoded PowerShell, reverse shells, EICAR, double
+extensions), the safety guards (symlink-swap race, auto-quarantine confidence floor,
+truncated-excerpt block), and filesystem edge cases (file deleted before processing,
+file deleted mid stability-poll). Run on Linux; see the platform note in
+[Safety model](#safety-model) for what that does and doesn't cover on Windows.
