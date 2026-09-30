@@ -1,0 +1,26 @@
+# Copy to config.yaml and adjust, or pass --config /path/to/this.yaml
+
+watch_dir: "/home/user/Downloads"
+quarantine_dir: "./quarantine"
+report_dir: "./reports"
+rules_dir: "./rules"
+
+max_file_size_mb: 50
+content_excerpt_bytes: 200000
+debounce_seconds: 2.0
+
+# Local heuristic + YARA score (0-100+) required before a file is escalated
+# to Claude for deep analysis. Lower = more sensitive, more API calls.
+local_risk_threshold: 25
+
+# When false (default), the agent only *recommends* quarantine in reports/events.jsonl.
+# When true, files Claude verdicts as malicious with confidence >= auto_quarantine_confidence
+# are moved (not deleted) to quarantine_dir automatically.
+auto_quarantine: false
+auto_quarantine_confidence: 0.85
+
+model: "claude-opus-5-5"
+claude_effort: "medium"
+max_tokens: 2048
+
+log_level: "INFO"
