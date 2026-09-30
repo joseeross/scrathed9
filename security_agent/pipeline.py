@@ -17,6 +17,11 @@ from .yara_scan import YaraScanner
 
 logger = logging.getLogger(__name__)
 
+# Hard floor, independent of config: never auto-quarantine below this confidence,
+# and never auto-quarantine off a truncated/partial content excerpt at all - a
+# verdict on partial evidence isn't a safe basis for an automatic, unattended action.
+AUTO_QUARANTINE_MIN_CONFIDENCE = 0.9
+
 
 def _make_excerpt(data: bytes, max_bytes: int) -> tuple[str, bool]:
     truncated = len(data) > max_bytes
@@ -40,6 +45,10 @@ class SecurityPipeline:
         self.reports = ReportWriter(Path(config.report_dir))
 
     def process(self, path: Path) -> Optional[ScanReport]:
+        if path.is_symlink():
+            logger.info("Skipping %s: symlinks are not followed (would read outside the watched dir)", path)
+            return None
+
         try:
             if not path.is_file():
                 return None
@@ -85,9 +94,11 @@ class SecurityPipeline:
             if verdict.error:
                 action_taken = "analysis_error"
             elif verdict.quarantine_recommended:
+                effective_threshold = max(self.config.auto_quarantine_confidence, AUTO_QUARANTINE_MIN_CONFIDENCE)
                 should_auto = (
                     self.config.auto_quarantine
-                    and verdict.confidence >= self.config.auto_quarantine_confidence
+                    and not truncated
+                    and verdict.confidence >= effective_threshold
                 )
                 if should_auto:
                     self.quarantine.move(path, reason=f"{verdict.threat_type}: {verdict.summary}")

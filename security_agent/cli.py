@@ -75,9 +75,13 @@ def main(argv: list[str] | None = None) -> int:
         pipeline = SecurityPipeline(config)
         count = 0
         for file_path in watch_dir.rglob("*"):
-            if file_path.is_file():
+            if not file_path.is_file():
+                continue
+            try:
                 pipeline.process(file_path)
-                count += 1
+            except Exception:
+                logger.exception("Unhandled error processing %s; continuing scan", file_path)
+            count += 1
         logger.info("Scan complete: %d files processed", count)
         return 0
 

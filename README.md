@@ -80,16 +80,33 @@ python -m security_agent --watch-dir ~/Downloads --auto-quarantine watch
   `quarantine_dir`, with every action logged to `quarantine/manifest.jsonl` (original
   path, new path, reason, timestamp) so nothing is unrecoverable.
 - **Auto-quarantine, when enabled, is gated on Claude's confidence** via
-  `auto_quarantine_confidence` (default `0.85`) - a high-confidence malicious verdict is
-  required, not just "suspicious."
+  `auto_quarantine_confidence`, with a hard floor of `0.9` enforced in code regardless
+  of what the config sets - a high-confidence malicious verdict is required, not just
+  "suspicious."
+- **Auto-quarantine never fires on a truncated content excerpt**, no matter how
+  confident the verdict - a verdict built on a partial view of the file isn't a safe
+  basis for an unattended action. It still gets written to the report as a
+  recommendation.
 - **The agent never executes analyzed files.** Content is read as bytes; binaries are
   reduced to printable-string extraction before being sent to Claude.
+- **Symlinks are never followed.** A dropped symlink pointing outside the watched
+  directory (e.g. at `~/.ssh/id_rsa`) is skipped rather than read and potentially sent
+  to the Claude API.
 
 ## Extending detection
 
-Add your own YARA rules as `.yar`/`.yara` files under `rules/` (see `rules/default.yar`
-for examples) - they're picked up automatically. Heuristic patterns and extension risk
+`rules/default.yar` is a set of illustrative starter rules, not a production detection
+ruleset - they cover a few common patterns (encoded PowerShell, reverse shells, PHP
+webshells, shadow-copy deletion, the EICAR test string) but haven't been tuned against
+real-world corpora and shouldn't be relied on alone. Add your own `.yar`/`.yara` files
+under `rules/` - they're picked up automatically. Heuristic patterns and extension risk
 weights live in `security_agent/heuristics.py`.
+
+Known limitations: double-extension detection is a heuristic signal, not a bypass-proof
+control - it won't catch Unicode/RTL-override tricks or trailing-dot games some
+platforms tolerate. Binary files are reduced to extracted printable strings for Claude's
+review, not structural analysis (imports, sections, per-section entropy) - a heavily
+packed binary may yield little usable excerpt either way.
 
 ## Configuration reference
 
