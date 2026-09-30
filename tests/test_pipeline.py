@@ -28,6 +28,17 @@ def _stub_verdict(confidence: float) -> ClaudeVerdict:
     )
 
 
+def test_process_survives_file_deleted_before_open(tmp_path):
+    """Simulates a delete-mid-scan race: the path was enqueued/listed but is gone
+    by the time process() actually tries to open it. Must not raise."""
+    pipeline = SecurityPipeline(_make_config(tmp_path))
+    ghost = tmp_path / "already_gone.txt"
+
+    report = pipeline.process(ghost)
+
+    assert report is None
+
+
 def test_symlink_is_never_followed(tmp_path):
     secret = tmp_path / "secret.txt"
     secret.write_text("super secret content")

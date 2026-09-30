@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import errno
 import logging
 import mimetypes
+import os
 import re
+import stat as stat_module
 from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -17,10 +20,59 @@ from .yara_scan import YaraScanner
 
 logger = logging.getLogger(__name__)
 
-# Hard floor, independent of config: never auto-quarantine below this confidence,
-# and never auto-quarantine off a truncated/partial content excerpt at all - a
-# verdict on partial evidence isn't a safe basis for an automatic, unattended action.
+# Hard floor, independent of config: never auto-quarantine below this confidence.
+# Not exposed as a config option on purpose - a model-reported confidence score is
+# not a calibrated probability, especially against a truncated/partial excerpt, and
+# the cost asymmetry (moving a file the user wanted vs. leaving a malicious file in
+# place) doesn't justify letting a user dial this down. Also never auto-quarantine
+# off a truncated excerpt at all, regardless of reported confidence - see `process()`.
 AUTO_QUARANTINE_MIN_CONFIDENCE = 0.9
+
+# O_NOFOLLOW/O_NONBLOCK are POSIX-only (absent on Windows); fall back to a no-op flag
+# there. On Windows, symlink rejection falls back to a pre-open check in _open_file,
+# which is best-effort (a TOCTOU window remains) rather than atomic - creating a
+# symlink on Windows normally requires elevated privileges, which narrows the risk
+# but does not eliminate it.
+_O_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
+_O_NONBLOCK = getattr(os, "O_NONBLOCK", 0)
+
+
+def _read_fd_fully(fd: int, size: int) -> bytes:
+    chunks = []
+    remaining = size
+    while remaining > 0:
+        chunk = os.read(fd, min(remaining, 1024 * 1024))
+        if not chunk:
+            break
+        chunks.append(chunk)
+        remaining -= len(chunk)
+    return b"".join(chunks)
+
+
+def _open_regular_file_no_follow(path: Path) -> tuple[Optional[int], Optional[str]]:
+    """Opens path atomically, refusing to follow a symlink at open time so a file
+    swapped for a symlink after any earlier check (TOCTOU) is rejected rather than
+    silently followed. O_NONBLOCK keeps a FIFO from hanging the caller; harmless on
+    regular files, where POSIX defines it as a no-op. Returns (fd, None) on success,
+    or (None, "symlink" | "not_regular" | <errno message>) on rejection/failure."""
+    try:
+        fd = os.open(str(path), os.O_RDONLY | _O_NOFOLLOW | _O_NONBLOCK)
+    except OSError as e:
+        if e.errno == errno.ELOOP:
+            return None, "symlink"
+        return None, str(e)
+
+    try:
+        st = os.fstat(fd)
+    except OSError as e:
+        os.close(fd)
+        return None, str(e)
+
+    if not stat_module.S_ISREG(st.st_mode):
+        os.close(fd)
+        return None, "not_regular"
+
+    return fd, None
 
 
 def _make_excerpt(data: bytes, max_bytes: int) -> tuple[str, bool]:
@@ -45,31 +97,31 @@ class SecurityPipeline:
         self.reports = ReportWriter(Path(config.report_dir))
 
     def process(self, path: Path) -> Optional[ScanReport]:
-        if path.is_symlink():
-            logger.info("Skipping %s: symlinks are not followed (would read outside the watched dir)", path)
+        fd, err = _open_regular_file_no_follow(path)
+        if fd is None:
+            if err == "symlink":
+                logger.info("Skipping %s: symlink rejected at open time (not followed)", path)
+            elif err == "not_regular":
+                logger.info("Skipping %s: not a regular file", path)
+            else:
+                logger.warning("Could not open %s: %s", path, err)
             return None
 
         try:
-            if not path.is_file():
+            size = os.fstat(fd).st_size
+            max_bytes = self.config.max_file_size_mb * 1024 * 1024
+            if size > max_bytes:
+                logger.info("Skipping %s: %d bytes exceeds max_file_size_mb limit", path, size)
                 return None
-            size = path.stat().st_size
-        except OSError as e:
-            logger.warning("Could not stat %s: %s", path, e)
-            return None
-
-        max_bytes = self.config.max_file_size_mb * 1024 * 1024
-        if size > max_bytes:
-            logger.info("Skipping %s: %d bytes exceeds max_file_size_mb limit", path, size)
-            return None
-
-        try:
-            data = path.read_bytes()
+            data = _read_fd_fully(fd, size)
         except OSError as e:
             logger.warning("Could not read %s: %s", path, e)
             return None
+        finally:
+            os.close(fd)
 
         heuristic_result = run_heuristics(path, data)
-        yara_matches = self.yara.scan(path)
+        yara_matches = self.yara.scan(data)
         risk_score = heuristic_result.score + 25 * len(yara_matches)
 
         timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%f")

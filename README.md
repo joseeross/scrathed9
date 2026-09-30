@@ -89,9 +89,17 @@ python -m security_agent --watch-dir ~/Downloads --auto-quarantine watch
   recommendation.
 - **The agent never executes analyzed files.** Content is read as bytes; binaries are
   reduced to printable-string extraction before being sent to Claude.
-- **Symlinks are never followed.** A dropped symlink pointing outside the watched
-  directory (e.g. at `~/.ssh/id_rsa`) is skipped rather than read and potentially sent
-  to the Claude API.
+- **Symlinks are never followed, and this is enforced atomically, not just checked
+  up front.** Anything that can write to the watched directory (which any dropped
+  file already can, by definition) could otherwise swap a real file for a symlink
+  between an early `is_symlink()` check and the later read - a TOCTOU race that would
+  let a malicious file redirect the agent to read (and potentially send to the Claude
+  API) something like `~/.ssh/id_rsa`. The agent opens files with `O_NOFOLLOW` so the
+  open itself atomically refuses a symlink target, and YARA scans the bytes already
+  read rather than reopening the path itself (which would reintroduce the same race).
+  On Windows, where `O_NOFOLLOW` doesn't exist, this falls back to a best-effort
+  pre-open check - narrower risk in practice since creating a symlink there normally
+  requires elevated privileges, but the atomic guarantee is POSIX-only.
 
 ## Extending detection
 
@@ -106,7 +114,14 @@ Known limitations: double-extension detection is a heuristic signal, not a bypas
 control - it won't catch Unicode/RTL-override tricks or trailing-dot games some
 platforms tolerate. Binary files are reduced to extracted printable strings for Claude's
 review, not structural analysis (imports, sections, per-section entropy) - a heavily
-packed binary may yield little usable excerpt either way.
+packed binary may yield little usable excerpt either way. **For packed Windows
+executables in particular, treat the local heuristic/YARA score as the primary signal,
+not the Claude verdict:** a string extract of a packed `.exe` often carries almost no
+readable content, so Claude legitimately comes back low-confidence on exactly the files
+where a real PE parser (import table, section entropy, entry-point section) would say
+the most. That's expected behavior given the current excerpt strategy, not a bug -
+proper PE structural analysis is a real gap, tracked as follow-up work rather than
+something bolted on here.
 
 ## Configuration reference
 

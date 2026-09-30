@@ -53,11 +53,17 @@ class _DebouncedHandler(FileSystemEventHandler):
 
 
 def _wait_until_stable(path: Path, poll_interval: float, attempts: int = 5) -> bool:
-    """Waits for a file's size to stop changing, so we don't scan a partial write."""
+    """Waits for a file's size to stop changing, so we don't scan a partial write.
+
+    Uses lstat, not stat: this loop only checks size, but a symlink shouldn't have
+    its target touched anywhere in the pipeline, even just to poll metadata. The
+    actual open-time rejection of symlinks happens later in pipeline.process(); this
+    is defense in depth, not the enforcement point.
+    """
     last_size = -1
     for _ in range(attempts):
         try:
-            size = path.stat().st_size
+            size = path.lstat().st_size
         except OSError:
             return False
         if size == last_size:

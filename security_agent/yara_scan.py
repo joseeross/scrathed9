@@ -44,12 +44,15 @@ class YaraScanner:
             logger.exception("Failed to compile YARA rules from %s", rules_dir)
             self.rules = None
 
-    def scan(self, path: Path) -> list[str]:
+    def scan(self, data: bytes) -> list[str]:
+        """Matches against already-read bytes, not a path - matching by path would
+        have yara-python reopen the file itself, reintroducing a TOCTOU window
+        after the caller's own symlink-safe read."""
         if self.rules is None:
             return []
         try:
-            matches = self.rules.match(str(path))
+            matches = self.rules.match(data=data)
             return [m.rule for m in matches]
         except Exception:
-            logger.exception("YARA scan failed for %s", path)
+            logger.exception("YARA scan failed")
             return []
