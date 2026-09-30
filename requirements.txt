@@ -1,0 +1,9 @@
+anthropic>=0.68.0
+watchdog>=4.0.0
+pyyaml>=6.0
+python-dotenv>=1.0.0
+
+# Optional but recommended: enables YARA rule matching. Requires the libyara
+# system library on some platforms. If installation fails, the agent still
+# runs fine - YARA scanning is skipped and heuristic scoring still applies.
+yara-python>=4.5.0
